@@ -1,0 +1,121 @@
+version: "3.8"
+
+x-node-base: &node-base
+  image: obolnetwork/charon:{{.CharonImageTag}}
+  {{if .CharonEntrypoint }}entrypoint: {{.CharonEntrypoint}}
+  {{end -}}
+  command: {{.CharonCommand}}
+  networks: [compose]
+  volumes: [{{.ComposeDir}}:/compose]
+  {{if .Relay }}depends_on: [relay]{{end}}
+
+services:
+  {{- range $i, $node := .Nodes}}
+  node{{$i}}:
+    <<: *node-base
+    {{if .ImageTag}}image: obolnetwork/charon:{{.ImageTag}}
+    {{end -}}
+    {{if .Entrypoint}}entrypoint: {{.Entrypoint}}
+    {{end -}}
+    {{if .Command}}command: {{.Command}}
+    {{end -}}
+    {{- if .EnvVars}}
+    environment:
+      {{- range $node.EnvVars}}
+      CHARON_{{.EnvKey}}: {{.Value}}
+      {{- end}}
+    {{end -}}
+    {{if .Ports}}
+    ports:
+      {{- range $node.Ports}}
+      - "{{.External}}:{{.Internal}}"
+      {{end -}}
+    {{end -}}
+  {{end -}}
+
+  {{- if .Relay }}
+  relay:
+    <<: *node-base
+    command: relay
+    depends_on: []
+    environment:
+      CHARON_HTTP_ADDRESS: 0.0.0.0:3640
+      CHARON_MONITORING_ADDRESS: 0.0.0.0:3620
+      CHARON_DATA_DIR: /compose/relay
+      CHARON_P2P_RELAYS: ""
+      CHARON_P2P_EXTERNAL_HOSTNAME: relay
+      CHARON_P2P_TCP_ADDRESS: 0.0.0.0:3610
+      CHARON_P2P_UDP_ADDRESS: 0.0.0.0:3630
+      CHARON_LOKI_ADDRESS: http://loki:3100/loki/api/v1/push
+  {{end -}}
+
+  {{- range $i, $vc := .VCs}}
+  {{- if $vc.Label}}
+  vc{{$i}}-{{$vc.Label}}:
+    {{if $vc.Build}}build: {{$vc.Build}}
+    {{end -}}
+    {{if $vc.Image}}image: {{$vc.Image}}
+    {{end -}}
+    {{if $vc.Command}}command: {{$vc.Command}}
+    {{end -}}
+    networks: [compose]
+    depends_on: [node{{$i}}]
+    environment:
+      NODE: node{{$i}}
+    volumes:
+      - .:/compose
+  {{end -}}
+  {{end -}}
+
+  {{if .Monitoring}}
+  curl:
+    # Can be used to curl services; e.g. docker-compose exec curl curl http://prometheus:9090/api/v1/rules\?type\=alert
+    image: curlimages/curl:latest
+    command: sleep 1d
+    networks: [compose]
+
+  prometheus:
+    image: prom/prometheus:latest
+    {{if .MonitoringPorts}}ports:
+      - "9090:9090"
+    {{end -}}
+    networks: [compose]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    {{if .MonitoringPorts}}ports:
+      - "3000:3000"
+    {{end -}}
+    networks: [compose]
+    volumes:
+      - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/datasource.yml
+      - ./grafana/notifiers.yml:/etc/grafana/provisioning/notifiers/notifiers.yml
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./grafana/dash_charon_overview.json:/etc/dashboards/dash_charon_overview.json
+      - ./grafana/dash_duty_details.json:/etc/dashboards/dash_duty_details.json
+      - ./grafana/dash_alerts.json:/etc/dashboards/dash_alerts.json
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    networks: [compose]
+    environment:
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: 10000
+    {{if .MonitoringPorts}}ports:
+      - "16686:16686"
+    {{end}}
+
+  loki:
+    image: grafana/loki:latest
+    networks: [compose]
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml
+  {{end}}
+
+networks:
+  compose:

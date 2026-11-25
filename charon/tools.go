@@ -1,0 +1,27 @@
+// Copyright © 2022-2023 Obol Labs Inc. Licensed under the terms of a Business Source License 1.1
+
+//go:build tools
+// +build tools
+
+package main
+
+// This file contains build time developer tools used in the charon repo.
+// To install all the tools run: go generate tools.go
+
+import (
+	_ "github.com/bufbuild/buf/cmd/buf"
+	_ "golang.org/x/tools/cmd/stringer"
+	_ "google.golang.org/protobuf/cmd/protoc-gen-go"
+)
+
+//go:generate echo Installing tools: stringer
+//go:generate go install golang.org/x/tools/cmd/stringer
+
+//go:generate echo Installing tools: protobuf
+//go:generate go install github.com/bufbuild/buf/cmd/buf
+//go:generate go install github.com/bufbuild/buf/cmd/protoc-gen-buf-breaking
+//go:generate go install github.com/bufbuild/buf/cmd/protoc-gen-buf-lint
+//go:generate go install google.golang.org/protobuf/cmd/protoc-gen-go
+
+//go:generate echo Installing tools: compose
+//go:generate go install github.com/obolnetwork/charon/testutil/compose/compose

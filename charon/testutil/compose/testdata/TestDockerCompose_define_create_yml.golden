@@ -1,0 +1,17 @@
+version: "3.8"
+
+x-node-base: &node-base
+  image: obolnetwork/charon:latest
+  entrypoint: echo
+  command: No charon commands needed for keygen=create define step
+  networks: [compose]
+  volumes: [testdir:/compose]
+  
+
+services:
+  node0:
+    <<: *node-base
+    
+
+networks:
+  compose:

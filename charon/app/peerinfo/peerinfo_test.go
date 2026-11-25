@@ -1,0 +1,137 @@
+// Copyright © 2022-2023 Obol Labs Inc. Licensed under the terms of a Business Source License 1.1
+
+package peerinfo_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/stretchr/testify/require"
+
+	"github.com/obolnetwork/charon/app/peerinfo"
+	"github.com/obolnetwork/charon/p2p"
+	"github.com/obolnetwork/charon/testutil"
+)
+
+func TestPeerInfo(t *testing.T) {
+	now := time.Now()
+	const gitCommit = "1234567"
+
+	nodes := []struct {
+		Version  string
+		LockHash []byte
+		Offset   time.Duration
+		Ignore   bool
+	}{
+		{
+			Version:  "local",
+			LockHash: []byte("abcdef"),
+		},
+		{
+			Version:  "ok",
+			LockHash: []byte("abcdef"),
+		},
+		{
+			Version:  "nok",
+			LockHash: []byte("000000"),
+			Offset:   time.Minute,
+		},
+		{
+			Version: "ignored",
+			Ignore:  true,
+		},
+	}
+
+	var (
+		ctx, cancel = context.WithCancel(context.Background())
+		n           = len(nodes)
+		tcpNodes    []host.Host
+		peers       []peer.ID
+		peerInfos   []*peerinfo.PeerInfo
+	)
+
+	for i := 0; i < n; i++ {
+		tcpNode := testutil.CreateHost(t, testutil.AvailableAddr(t))
+		for j, other := range tcpNodes {
+			tcpNode.Peerstore().AddAddrs(other.ID(), other.Addrs(), peerstore.PermanentAddrTTL)
+			other.Peerstore().AddAddrs(tcpNode.ID(), tcpNode.Addrs(), peerstore.PermanentAddrTTL)
+			if !nodes[i].Ignore {
+				err := tcpNode.Peerstore().SetProtocols(other.ID(), "/charon/peerinfo/1.0.0")
+				require.NoError(t, err)
+			}
+			if !nodes[j].Ignore {
+				err := other.Peerstore().SetProtocols(tcpNode.ID(), "/charon/peerinfo/1.0.0")
+				require.NoError(t, err)
+			}
+		}
+
+		tcpNodes = append(tcpNodes, tcpNode)
+		peers = append(peers, tcpNode.ID())
+	}
+
+	nowFunc := func(i int) func() time.Time {
+		return func() time.Time { return now.Add(nodes[i].Offset) }
+	}
+
+	for i := 0; i < n; i++ {
+		node := nodes[i]
+
+		// Most nodes are passive
+		tickProvider := func() (<-chan time.Time, func()) {
+			return nil, func() {}
+		}
+		metricSubmitter := func(peer.ID, time.Duration, string, string, time.Time) {
+			panic("unexpected metric submitted")
+		}
+
+		// Except node 0, which does a single poll of all other peers.
+		if i == 0 {
+			tickProvider = func() (<-chan time.Time, func()) {
+				ch := make(chan time.Time, 1)
+				ch <- now
+
+				return ch, func() {}
+			}
+
+			var submitted int
+			metricSubmitter = func(peerID peer.ID, clockOffset time.Duration, version, gitHash string, startTime time.Time) {
+				for i, tcpNode := range tcpNodes {
+					if tcpNode.ID() != peerID {
+						continue
+					}
+					node := nodes[i]
+					require.Equal(t, node.Version, version)
+					require.Equal(t, gitCommit, gitHash)
+					require.Equal(t, nowFunc(i)().Unix(), startTime.Unix())
+
+					submitted++
+					if submitted == n-2 { // Expect metrics from everyone but ourselves or the ignored node.
+						cancel()
+					}
+
+					return
+				}
+				panic("unknown peer")
+			}
+		}
+
+		peerInfo := peerinfo.NewForT(t, tcpNodes[i], peers, node.Version, node.LockHash, gitCommit, p2p.SendReceive, p2p.RegisterHandler,
+			tickProvider, nowFunc(i), metricSubmitter)
+
+		peerInfos = append(peerInfos, peerInfo)
+	}
+
+	for i := 0; i < n; i++ {
+		if nodes[i].Ignore {
+			continue
+		}
+		go peerInfos[i].Run(ctx)
+	}
+
+	<-ctx.Done()
+	cancel()
+}
